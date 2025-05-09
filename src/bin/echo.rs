@@ -1,68 +1,42 @@
-use std::io::{BufRead, StdoutLock, Write};
+use anyhow::Context;
+use gossipy::{Message, Node};
+use serde::{Deserialize, Serialize};
 
-use anyhow::{bail, Context};
-use gossipy::{Body, Message, Payload};
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
+pub enum Payload {
+    Echo { echo: String },
+    EchoOk { echo: String },
+}
 
 struct EchoNode {
-    id: String,
-    node_ids: Vec<String>,
-    msg_id: usize,
+    node: Node,
 }
 
 impl EchoNode {
-    fn handle(&mut self, input: Message, stdout: &mut StdoutLock) -> anyhow::Result<()> {
-        let resp_payload = match input.body.payload {
-            Payload::Init { node_id, node_ids } => {
-                self.id = node_id;
-                self.node_ids = node_ids;
-                Payload::InitOk {}
-            }
-            Payload::Echo { echo } => Payload::EchoOk { echo },
-            Payload::EchoOk { .. } => return Ok(()), // we do not care about these messages
-            _ => {
-                bail!("Unexpected message received: {:?}", input);
-            }
-        };
+    fn run() -> anyhow::Result<()> {
+        let mut node = EchoNode { node: Node::new()? };
 
-        let body = Body {
-            id: Some(self.msg_id),
-            in_reply_to: input.body.id,
-            payload: resp_payload,
-        };
+        let messages = node.node.messages::<Message<Payload>>();
 
-        let response = Message {
-            src: self.id.clone(),
-            dst: input.src,
-            body,
-        };
-
-        serde_json::to_writer(&mut *stdout, &response).context("writing message to STDOUT")?;
-        stdout.write_all(b"\n").context("write new line")?;
-
-        self.msg_id += 1;
+        for msg in messages {
+            let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
+            node.handle(msg)?;
+        }
 
         Ok(())
     }
 
-    fn run() -> anyhow::Result<()> {
-        let stdin = std::io::stdin().lock();
-        let mut stdout = std::io::stdout().lock();
-
-        let mut node = EchoNode {
-            id: String::new(),
-            node_ids: vec![],
-            msg_id: 1,
+    fn handle(&mut self, incoming_msg: Message<Payload>) -> anyhow::Result<()> {
+        let resp_payload = match incoming_msg.body.payload {
+            Payload::Echo { ref echo } => Payload::EchoOk {
+                echo: echo.to_owned(),
+            },
+            Payload::EchoOk { .. } => return Ok(()), // we do not care about these messages
         };
 
-        for line in stdin.lines() {
-            let line = line.context("failed to read from STDIN")?;
-            let input = serde_json::from_str::<Message>(&line)
-                .context("deserializing Maelstrom message from STDIN")?;
-
-            node.handle(input, &mut stdout)?;
-        }
-
-        Ok(())
+        self.node.reply(incoming_msg, resp_payload)
     }
 }
 

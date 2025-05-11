@@ -1,5 +1,4 @@
-use anyhow::Context;
-use gossipy::{Message, Node};
+use gossipy::{GossipyNode, Message, Node};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,36 +9,29 @@ pub enum Payload {
     EchoOk { echo: String },
 }
 
-struct EchoNode {
-    node: Node,
-}
+/// Replies to Echo messages
+struct EchoNode {}
 
-impl EchoNode {
-    fn run() -> anyhow::Result<()> {
-        let mut node = EchoNode { node: Node::new()? };
-
-        let messages = node.node.messages::<Message<Payload>>();
-
-        for msg in messages {
-            let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
-            node.handle(msg)?;
-        }
-
-        Ok(())
-    }
-
-    fn handle(&mut self, incoming_msg: Message<Payload>) -> anyhow::Result<()> {
-        let resp_payload = match incoming_msg.body.payload {
+impl Node<Payload> for EchoNode {
+    fn handle(&mut self, msg: Message<Payload>, node: &mut GossipyNode) -> anyhow::Result<()>
+    where
+        Payload: Serialize,
+    {
+        let reply = match msg.body.payload {
             Payload::Echo { ref echo } => Payload::EchoOk {
                 echo: echo.to_owned(),
             },
             Payload::EchoOk { .. } => return Ok(()), // we do not care about these messages
         };
 
-        self.node.reply(incoming_msg, resp_payload)
+        node.reply(msg, reply)
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    EchoNode::run()
+    let mut node = GossipyNode::new()?;
+
+    let echo_node = EchoNode {};
+
+    node.run(echo_node)
 }

@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use anyhow::{anyhow, bail, Context};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message<P> {
@@ -31,8 +31,13 @@ pub enum Payload {
     InitOk {},
 }
 
+// Every custom node must implement this trait to handle incoming messages
+pub trait Node<Payload> {
+    fn handle(&mut self, msg: Message<Payload>, node: &mut GossipyNode) -> anyhow::Result<()>;
+}
+
 /// Common node functionality
-pub struct Node {
+pub struct GossipyNode {
     pub id: String,
     node_ids: Vec<String>,
     msg_id: usize,
@@ -40,7 +45,7 @@ pub struct Node {
     stdout: std::io::Stdout,
 }
 
-impl Node {
+impl GossipyNode {
     /// Creates new [`Node`] instance initialized by Maelstrom `init` message
     pub fn new() -> anyhow::Result<Self> {
         let mut node = Self {
@@ -85,29 +90,31 @@ impl Node {
         Ok(node)
     }
 
-    pub fn new_msg_id(&mut self) -> usize {
-        let msg_id = self.msg_id;
-        self.msg_id += 1;
-        msg_id
-    }
-
-    /// Returns iterator over deserialized incoming messages
-    pub fn messages<T>(&mut self) -> impl Iterator<Item = Result<T, serde_json::Error>>
+    /// Starts main loop that processes incoming messages
+    pub fn run<N, Payload>(&mut self, mut node: N) -> anyhow::Result<()>
     where
-        T: for<'a> Deserialize<'a>,
+        N: Node<Payload>,
+        Payload: Serialize + DeserializeOwned,
     {
-        serde_json::Deserializer::from_reader(self.stdin.lock()).into_iter::<T>()
+        let messages = self.messages::<Message<Payload>>();
+
+        for msg in messages {
+            let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
+            node.handle(msg, self)?;
+        }
+
+        Ok(())
     }
 
-    /// Replies to the incoming message
-    pub fn reply<P>(&mut self, incoming_msg: Message<P>, payload: P) -> anyhow::Result<()>
+    /// Replies to the incoming message with a reply with specified new payload
+    pub fn reply<P>(&mut self, incoming_msg: Message<P>, new_payload: P) -> anyhow::Result<()>
     where
         P: Serialize,
     {
         let body = Body {
             id: Some(self.new_msg_id()),
             in_reply_to: incoming_msg.body.id,
-            payload,
+            payload: new_payload,
         };
 
         let reply = Message {
@@ -119,7 +126,7 @@ impl Node {
         self.send(reply)
     }
 
-    /// Sends message
+    /// Sends provided message
     pub fn send<P>(&mut self, msg: Message<P>) -> anyhow::Result<()>
     where
         P: Serialize,
@@ -129,5 +136,20 @@ impl Node {
         self.stdout.write_all(b"\n").context("write new line")?;
 
         Ok(())
+    }
+
+    /// Returns iterator over deserialized incoming messages
+    fn messages<T>(&mut self) -> impl Iterator<Item = Result<T, serde_json::Error>>
+    where
+        T: for<'a> Deserialize<'a>,
+    {
+        serde_json::Deserializer::from_reader(self.stdin.lock()).into_iter::<T>()
+    }
+
+    /// Returns new message ID
+    fn new_msg_id(&mut self) -> usize {
+        let msg_id = self.msg_id;
+        self.msg_id += 1;
+        msg_id
     }
 }

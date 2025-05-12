@@ -20,10 +20,17 @@ pub struct Body<P> {
     pub payload: P,
 }
 
+/// Message handler
+///
+/// Every node must implement this trait to handle incoming messages
+pub trait Handler<Payload> {
+    fn handle(&mut self, msg: Message<Payload>, node: &mut Node) -> anyhow::Result<()>;
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
-pub enum Payload {
+enum InitPayload {
     Init {
         node_id: String,
         node_ids: Vec<String>,
@@ -31,13 +38,8 @@ pub enum Payload {
     InitOk {},
 }
 
-// Every custom node must implement this trait to handle incoming messages
-pub trait Node<Payload> {
-    fn handle(&mut self, msg: Message<Payload>, node: &mut GossipyNode) -> anyhow::Result<()>;
-}
-
 /// Common node functionality
-pub struct GossipyNode {
+pub struct Node {
     pub id: String,
     node_ids: Vec<String>,
     msg_id: usize,
@@ -45,7 +47,7 @@ pub struct GossipyNode {
     stdout: std::io::Stdout,
 }
 
-impl GossipyNode {
+impl Node {
     /// Creates new [`Node`] instance initialized by Maelstrom `init` message
     pub fn new() -> anyhow::Result<Self> {
         let mut node = Self {
@@ -58,19 +60,19 @@ impl GossipyNode {
 
         let stdin = node.stdin.lock();
 
-        let msg = serde_json::Deserializer::from_reader(stdin)
-            .into_iter::<Message<Payload>>()
+        let msg: Message<InitPayload> = serde_json::Deserializer::from_reader(stdin)
+            .into_iter()
             .next()
             .ok_or(anyhow!("failed to read Init message from STDIN"))?
             .context("deserializing Init message from STDIN")?;
 
         let reply_payload = match msg.body.payload {
-            Payload::Init { node_id, node_ids } => {
+            InitPayload::Init { node_id, node_ids } => {
                 node.id = node_id;
                 node.node_ids = node_ids;
-                Payload::InitOk {}
+                InitPayload::InitOk {}
             }
-            Payload::InitOk {} => bail!("Unexpected message received: {:?}", msg),
+            InitPayload::InitOk {} => bail!("Unexpected message received: {:?}", msg),
         };
 
         let body = Body {
@@ -91,16 +93,16 @@ impl GossipyNode {
     }
 
     /// Starts main loop that processes incoming messages
-    pub fn run<N, Payload>(&mut self, mut node: N) -> anyhow::Result<()>
+    pub fn run<H, Payload>(&mut self, mut handler: H) -> anyhow::Result<()>
     where
-        N: Node<Payload>,
+        H: Handler<Payload>,
         Payload: Serialize + DeserializeOwned,
     {
         let messages = self.messages::<Message<Payload>>();
 
         for msg in messages {
             let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
-            node.handle(msg, self)?;
+            handler.handle(msg, self)?;
         }
 
         Ok(())
@@ -146,7 +148,7 @@ impl GossipyNode {
         serde_json::Deserializer::from_reader(self.stdin.lock()).into_iter::<T>()
     }
 
-    /// Returns new message ID
+    /// Produces new message ID
     fn new_msg_id(&mut self) -> usize {
         let msg_id = self.msg_id;
         self.msg_id += 1;

@@ -1,4 +1,4 @@
-use gossipy::{GossipyNode, Message, Node};
+use gossipy::{Handler, Message, Node};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -10,10 +10,10 @@ pub enum Payload {
 }
 
 /// Replies to Echo messages
-struct EchoNode {}
+struct EchoHandler {}
 
-impl Node<Payload> for EchoNode {
-    fn handle(&mut self, msg: Message<Payload>, node: &mut GossipyNode) -> anyhow::Result<()>
+impl Handler<Payload> for EchoHandler {
+    fn handle(&mut self, msg: Message<Payload>, node: &mut Node) -> anyhow::Result<()>
     where
         Payload: Serialize,
     {
@@ -29,9 +29,9 @@ impl Node<Payload> for EchoNode {
 }
 
 fn main() -> anyhow::Result<()> {
-    let mut node = GossipyNode::new()?;
+    let mut node = Node::new()?;
 
-    let echo_node = EchoNode {};
+    let echo_handler = EchoHandler {};
 
-    node.run(echo_node)
+    node.run(echo_handler)
 }

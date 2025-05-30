@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+};
 
 use anyhow::{bail, Context};
 use gossipy::{Handler, Message, Node};
@@ -25,9 +28,8 @@ pub enum Payload {
 struct BroadcastHandler {
     messages: HashSet<isize>,
     topology: HashMap<String, Vec<String>>,
-    neighbours: Vec<String>,
+    neighbours: Arc<Mutex<Vec<String>>>,
     others_know: HashMap<String, HashSet<isize>>,
-    chan: std::sync::mpsc::Sender<Vec<String>>,
 }
 
 impl Handler<Payload> for BroadcastHandler {
@@ -40,7 +42,7 @@ impl Handler<Payload> for BroadcastHandler {
                 self.messages.insert(message);
 
                 // Send the message to node's neighbours
-                for dst in self.neighbours.iter() {
+                for dst in self.neighbours.lock().expect("lock").iter() {
                     // do not send back to the source node
                     if &msg.src == dst {
                         continue;
@@ -69,12 +71,11 @@ impl Handler<Payload> for BroadcastHandler {
             }
             Payload::Topology { ref topology } => {
                 self.topology = topology.clone();
-                self.neighbours = self
+                *self.neighbours.lock().expect("lock") = self
                     .topology
                     .get(&node.id())
                     .expect("our node must be included in topology map")
                     .clone();
-                self.chan.send(self.neighbours.clone())?;
 
                 Payload::TopologyOk
             }
@@ -89,28 +90,25 @@ impl Handler<Payload> for BroadcastHandler {
 fn main() -> anyhow::Result<()> {
     let mut node = Node::new()?;
 
-    let (tx, rx) = std::sync::mpsc::channel();
-
     let broadcast_handler = BroadcastHandler {
         messages: HashSet::new(),
         topology: HashMap::new(),
-        neighbours: Vec::new(),
+        neighbours: Arc::new(Mutex::new(Vec::new())),
         others_know: node
             // preallocate with all the nodes in the cluster
             .node_ids()
             .iter()
             .map(|id| (id.clone(), HashSet::new()))
             .collect(),
-        chan: tx,
     };
 
     let mut node_clone = node.clone();
+    let neighbours = Arc::clone(&broadcast_handler.neighbours);
     std::thread::spawn(move || {
         // periodically check what neighbours already know
-        let neighbours = rx.recv().unwrap();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(300));
-
+            let neighbours = neighbours.lock().expect("lock");
             for neighbour in neighbours.iter() {
                 if let Err(e) = node_clone
                     .send_to(neighbour, Payload::Read)

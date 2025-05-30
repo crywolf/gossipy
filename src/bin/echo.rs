@@ -2,8 +2,7 @@ use gossipy::{Handler, Message, Node};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum Payload {
     Echo { echo: String },
     EchoOk { echo: String },
@@ -13,7 +12,7 @@ pub enum Payload {
 struct EchoHandler {}
 
 impl Handler<Payload> for EchoHandler {
-    fn handle(&mut self, msg: Message<Payload>, node: &mut Node) -> anyhow::Result<()>
+    fn handle(&mut self, msg: Message<Payload>, mut node: Node) -> anyhow::Result<()>
     where
         Payload: Serialize,
     {

@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
-};
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, Context};
 use gossipy::{Handler, Message, Node};
@@ -9,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Payload {
+enum Payload {
     Broadcast {
         message: isize,
     },
@@ -22,17 +19,25 @@ pub enum Payload {
         topology: HashMap<String, Vec<String>>,
     },
     TopologyOk,
+    Gossip {
+        have: HashSet<isize>,
+    },
+}
+
+#[derive(Debug)]
+enum Command {
+    SendGossip,
 }
 
 /// Single-Node Broadcast system
 struct BroadcastHandler {
     messages: HashSet<isize>,
     topology: HashMap<String, Vec<String>>,
-    neighbours: Arc<Mutex<Vec<String>>>,
+    neighbours: Vec<String>,
     others_know: HashMap<String, HashSet<isize>>,
 }
 
-impl Handler<Payload> for BroadcastHandler {
+impl Handler<Payload, Command> for BroadcastHandler {
     fn handle(&mut self, msg: Message<Payload>, mut node: Node) -> anyhow::Result<()>
     where
         Payload: Serialize,
@@ -41,37 +46,27 @@ impl Handler<Payload> for BroadcastHandler {
             Payload::Broadcast { message } => {
                 self.messages.insert(message);
 
-                // Send the message to node's neighbours
-                for dst in self.neighbours.lock().expect("lock").iter() {
-                    // do not send back to the source node
-                    if &msg.src == dst {
-                        continue;
-                    }
-
-                    // do not send what neighbour already knows
-                    if let Some(neighbours_know) = self.others_know.get(dst) {
-                        if neighbours_know.contains(&message) {
-                            continue;
-                        }
-                    }
-                    node.send_to(dst, msg.body.payload.clone())?;
-                }
-
                 Payload::BroadcastOk
+            }
+            Payload::Gossip { have } => {
+                self.messages.extend(have.iter());
+                // update what neighbour already knows
+                self.others_know
+                    .get_mut(&msg.src)
+                    .expect("message from unknown node in the cluster")
+                    .extend(have);
+                return Ok(());
             }
             Payload::Read {} => Payload::ReadOk {
                 messages: self.messages.clone(),
             },
             Payload::ReadOk { messages } => {
-                self.others_know
-                    .get_mut(&msg.src)
-                    .expect("message from unknown node in the cluster")
-                    .extend(messages);
+                self.others_know.insert(msg.src, messages);
                 return Ok(());
             }
             Payload::Topology { ref topology } => {
                 self.topology = topology.clone();
-                *self.neighbours.lock().expect("lock") = self
+                self.neighbours = self
                     .topology
                     .get(&node.id())
                     .expect("our node must be included in topology map")
@@ -85,6 +80,28 @@ impl Handler<Payload> for BroadcastHandler {
 
         node.reply(msg, reply)
     }
+
+    fn handle_command(&mut self, cmd: Command, mut node: Node) -> anyhow::Result<()> {
+        for neighbour in self.neighbours.iter() {
+            match cmd {
+                Command::SendGossip => {
+                    let mut we_know = HashSet::new();
+                    if let Some(neighbours_know) = self.others_know.get(neighbour) {
+                        // do not send what neighbour already knows
+                        we_know = self
+                            .messages
+                            .iter()
+                            .filter(|m| !neighbours_know.contains(m))
+                            .copied()
+                            .collect();
+                    }
+                    node.send_to(neighbour, Payload::Gossip { have: we_know })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -93,7 +110,7 @@ fn main() -> anyhow::Result<()> {
     let broadcast_handler = BroadcastHandler {
         messages: HashSet::new(),
         topology: HashMap::new(),
-        neighbours: Arc::new(Mutex::new(Vec::new())),
+        neighbours: Vec::new(),
         others_know: node
             // preallocate with all the nodes in the cluster
             .node_ids()
@@ -102,25 +119,23 @@ fn main() -> anyhow::Result<()> {
             .collect(),
     };
 
-    let mut node_clone = node.clone();
-    let neighbours = Arc::clone(&broadcast_handler.neighbours);
+    let (tx, rx) = std::sync::mpsc::channel::<Command>();
+
     std::thread::spawn(move || {
-        // periodically check what neighbours already know
+        // periodically gossip new messages to the other nodes in the cluster
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let neighbours = neighbours.lock().expect("lock");
-            for neighbour in neighbours.iter() {
-                if let Err(e) = node_clone
-                    .send_to(neighbour, Payload::Read)
-                    .context("sending 'Read' to {neighbour}")
-                {
-                    eprintln!("ERROR: {e:?}");
-                    break;
-                }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if let Err(e) = tx
+                .send(Command::SendGossip)
+                .context("sending Gossip command")
+            {
+                eprintln!("ERROR: {e:?}");
+                break;
             }
         }
     });
 
-    node.run(broadcast_handler)?;
+    node.run(broadcast_handler, Some(rx))?;
+
     Ok(())
 }

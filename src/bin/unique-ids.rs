@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Payload {
+enum Payload {
     Generate,
     GenerateOk { id: String },
 }
@@ -36,5 +36,5 @@ fn main() -> anyhow::Result<()> {
 
     let handler = GenerateIdHandler { id: 1 };
 
-    node.run(handler)
+    node.run(handler, None)
 }

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Payload {
+enum Payload {
     Echo { echo: String },
     EchoOk { echo: String },
 }
@@ -32,5 +32,5 @@ fn main() -> anyhow::Result<()> {
 
     let echo_handler = EchoHandler {};
 
-    node.run(echo_handler)
+    node.run(echo_handler, None)
 }

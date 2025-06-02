@@ -23,11 +23,22 @@ pub struct Body<P> {
     pub payload: P,
 }
 
+#[derive(Clone, Debug)]
+pub enum Event<Payload, Command> {
+    Message(Message<Payload>),
+    Command(Command),
+}
+
 /// Message handler
 ///
 /// Every node must implement this trait to handle incoming messages
-pub trait Handler<Payload> {
+pub trait Handler<Payload, Command = ()> {
+    /// Handles message
     fn handle(&mut self, msg: Message<Payload>, node: Node) -> anyhow::Result<()>;
+    /// Handles command. Only node that issues commands needs to implement this method.
+    fn handle_command(&mut self, _cmd: Command, _node: Node) -> anyhow::Result<()> {
+        unimplemented!("Node handler using commands must implement this method");
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,16 +117,65 @@ impl Node {
     }
 
     /// Starts main loop that processes incoming messages
-    pub fn run<H, Payload>(&mut self, mut handler: H) -> anyhow::Result<()>
+    pub fn run<H, Payload, Command>(
+        &mut self,
+        mut handler: H,
+        command_rx: Option<std::sync::mpsc::Receiver<Command>>,
+    ) -> anyhow::Result<()>
     where
-        H: Handler<Payload>,
-        Payload: Serialize + DeserializeOwned,
+        H: Handler<Payload, Command> + Send + 'static,
+        Payload: Serialize + DeserializeOwned + Send + 'static + Sync,
+        Command: Send + 'static + Sync,
     {
-        let messages = self.messages::<Message<Payload>>();
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<Event<Payload, Command>>();
 
-        for msg in messages {
+        let event_tx_clone = event_tx.clone();
+        if let Some(rx) = command_rx {
+            std::thread::spawn(move || loop {
+                let cmd = rx.recv().unwrap();
+                if let Err(e) = event_tx_clone
+                    .send(Event::Command(cmd))
+                    .context("sending command to the channel")
+                {
+                    {
+                        eprintln!("ERROR: {e:?}");
+                    }
+                }
+            });
+        }
+
+        let node = self.clone();
+        std::thread::spawn(move || loop {
+            let event = event_rx.recv().unwrap();
+            match event {
+                Event::Message(msg) => {
+                    if let Err(e) = handler
+                        .handle(msg, node.clone())
+                        .context("sending message event to the channel")
+                    {
+                        {
+                            eprintln!("ERROR: {e:?}");
+                        }
+                    }
+                }
+                Event::Command(cmd) => {
+                    if let Err(e) = handler
+                        .handle_command(cmd, node.clone())
+                        .context("sending command event to the channel")
+                    {
+                        {
+                            eprintln!("ERROR: {e:?}");
+                        }
+                    }
+                }
+            }
+        });
+
+        let incomming_messages = self.messages::<Message<Payload>>();
+
+        for msg in incomming_messages {
             let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
-            handler.handle(msg, self.clone())?;
+            event_tx.send(Event::Message(msg))?;
         }
 
         Ok(())

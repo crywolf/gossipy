@@ -36,5 +36,5 @@ fn main() -> anyhow::Result<()> {
 
     let handler = GenerateIdHandler { id: 1 };
 
-    node.run(handler, None)
+    node.run(handler)
 }

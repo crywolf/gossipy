@@ -24,7 +24,7 @@ enum Payload {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Command {
     SendGossip,
 }
@@ -38,7 +38,7 @@ struct BroadcastHandler {
 }
 
 impl Handler<Payload, Command> for BroadcastHandler {
-    fn handle(&mut self, msg: Message<Payload>, mut node: Node) -> anyhow::Result<()>
+    fn handle(&mut self, msg: Message<Payload>, mut node: Node<Command>) -> anyhow::Result<()>
     where
         Payload: Serialize,
     {
@@ -81,7 +81,7 @@ impl Handler<Payload, Command> for BroadcastHandler {
         node.reply(msg, reply)
     }
 
-    fn handle_command(&mut self, cmd: Command, mut node: Node) -> anyhow::Result<()> {
+    fn handle_command(&mut self, cmd: Command, mut node: Node<Command>) -> anyhow::Result<()> {
         for neighbour in self.neighbours.iter() {
             match cmd {
                 Command::SendGossip => {
@@ -121,6 +121,8 @@ fn main() -> anyhow::Result<()> {
 
     let (tx, rx) = std::sync::mpsc::channel::<Command>();
 
+    node.register_command_receiver(rx);
+
     std::thread::spawn(move || {
         // periodically gossip new messages to the other nodes in the cluster
         loop {
@@ -135,7 +137,7 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    node.run(broadcast_handler, Some(rx))?;
+    node.run(broadcast_handler)?;
 
     Ok(())
 }

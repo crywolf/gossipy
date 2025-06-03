@@ -34,9 +34,9 @@ pub enum Event<Payload, Command> {
 /// Every node must implement this trait to handle incoming messages
 pub trait Handler<Payload, Command = ()> {
     /// Handles message
-    fn handle(&mut self, msg: Message<Payload>, node: Node) -> anyhow::Result<()>;
+    fn handle(&mut self, msg: Message<Payload>, node: Node<Command>) -> anyhow::Result<()>;
     /// Handles command. Only node that issues commands needs to implement this method.
-    fn handle_command(&mut self, _cmd: Command, _node: Node) -> anyhow::Result<()> {
+    fn handle_command(&mut self, _cmd: Command, _node: Node<Command>) -> anyhow::Result<()> {
         unimplemented!("Node handler using commands must implement this method");
     }
 }
@@ -53,8 +53,9 @@ enum InitPayload {
 
 /// Common node functionality
 #[derive(Clone)]
-pub struct Node {
+pub struct Node<Command = ()> {
     inner: Arc<Mutex<Inner>>,
+    command_rx: Option<Arc<Mutex<std::sync::mpsc::Receiver<Command>>>>,
 }
 
 pub struct Inner {
@@ -68,7 +69,10 @@ pub struct Inner {
     stdout: std::io::Stdout,
 }
 
-impl Node {
+impl<Command> Node<Command>
+where
+    Command: Clone,
+{
     /// Creates new [`Node`] instance initialized by Maelstrom `init` message
     pub fn new() -> anyhow::Result<Self> {
         let mut node = Self {
@@ -79,6 +83,7 @@ impl Node {
                 stdin: std::io::stdin(),
                 stdout: std::io::stdout(),
             })),
+            command_rx: None,
         };
 
         let stdin = node.inner.lock().expect("lock").stdin.lock();
@@ -116,23 +121,29 @@ impl Node {
         Ok(node)
     }
 
+    /// Registers Receiver part of the channel to receive commands
+    pub fn register_command_receiver(&mut self, command_rx: std::sync::mpsc::Receiver<Command>)
+    where
+        Command: Send + 'static + Sync,
+    {
+        self.command_rx = Some(Arc::new(Mutex::new(command_rx)));
+    }
+
     /// Starts main loop that processes incoming messages
-    pub fn run<H, Payload, Command>(
-        &mut self,
-        mut handler: H,
-        command_rx: Option<std::sync::mpsc::Receiver<Command>>,
-    ) -> anyhow::Result<()>
+    pub fn run<H, Payload>(&mut self, mut handler: H) -> anyhow::Result<()>
     where
         H: Handler<Payload, Command> + Send + 'static,
         Payload: Serialize + DeserializeOwned + Send + 'static + Sync,
         Command: Send + 'static + Sync,
     {
         let (event_tx, event_rx) = std::sync::mpsc::channel::<Event<Payload, Command>>();
-
         let event_tx_clone = event_tx.clone();
-        if let Some(rx) = command_rx {
+
+        if let Some(command_rx) = self.command_rx.clone() {
+            // if the node has command receiver registered,
+            // use it to create events of type Command and send it to the event channel
             std::thread::spawn(move || loop {
-                let cmd = rx.recv().unwrap();
+                let cmd = command_rx.lock().expect("lock").recv().unwrap();
                 if let Err(e) = event_tx_clone
                     .send(Event::Command(cmd))
                     .context("sending command to the channel")
@@ -144,6 +155,7 @@ impl Node {
             });
         }
 
+        // listen for events from the event channel and handle either message or command
         let node = self.clone();
         std::thread::spawn(move || loop {
             let event = event_rx.recv().unwrap();
@@ -171,6 +183,7 @@ impl Node {
             }
         });
 
+        // send incomming messages to event channel as a Message events
         let incomming_messages = self.messages::<Message<Payload>>();
 
         for msg in incomming_messages {

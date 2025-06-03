@@ -32,5 +32,5 @@ fn main() -> anyhow::Result<()> {
 
     let echo_handler = EchoHandler {};
 
-    node.run(echo_handler, None)
+    node.run(echo_handler)
 }

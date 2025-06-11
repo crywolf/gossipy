@@ -33,5 +33,40 @@ cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadc
 ### 3c) Fault Tolerant Broadcast
 
 ```shell
-cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 5 --time-limit 20 --rate 10  --nemesis partition --log-stderr
+cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 5 --time-limit 20 --rate 10 --log-stderr --nemesis partition
+```
+
+### 3d) Efficient Broadcast, Part I
+
+Challenge is to achieve (in parenthesis are achieved numbers):
+* Messages-per-operation is below 30 (<26)
+* Median latency is below 400ms (348ms)
+* Maximum latency is below 600ms (583ms)
+
+**Topology** used: total (all nodes are connected, each node is a neighbor of every other node)
+
+```shell
+cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast 500 --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology total
+```
+_Is it stll fault tolerant?_ Yes!
+```shell
+cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast 500 --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology total --nemesis partition
+```
+
+### 3e) Efficient Broadcast, Part II
+
+Challenge is to achieve (in parenthesis are achieved numbers):
+* Messages-per-operation is below 20 (<9)
+* Median latency is below 1 second (952ms)
+* Maximum latency is below 2 seconds (1566ms)
+
+**Topology** used: grid (5x5 for 25 nodes in this case)
+
+```shell
+cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology grid
+```
+
+_Is it stll fault tolerant?_ Yes!
+```shell
+cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology grid --nemesis partition
 ```

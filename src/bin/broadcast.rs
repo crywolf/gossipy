@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use gossipy::{Handler, Message, Node};
 use serde::{Deserialize, Serialize};
 
@@ -20,6 +20,9 @@ enum Payload {
     },
     TopologyOk,
     Gossip {
+        have: HashSet<isize>,
+    },
+    GossipOk {
         have: HashSet<isize>,
     },
 }
@@ -48,14 +51,16 @@ impl Handler<Payload, Command> for BroadcastHandler {
 
                 Payload::BroadcastOk
             }
-            Payload::Gossip { have } => {
+            Payload::Gossip { ref have } => {
+                // add to what we know
                 self.messages.extend(have.iter());
                 // update what neighbour already knows
                 self.others_know
                     .get_mut(&msg.src)
                     .expect("message from unknown node in the cluster")
-                    .extend(have);
-                return Ok(());
+                    .extend(have.iter());
+                // ackowledge what we just have received
+                Payload::GossipOk { have: have.clone() }
             }
             Payload::Read {} => Payload::ReadOk {
                 messages: self.messages.clone(),
@@ -74,8 +79,15 @@ impl Handler<Payload, Command> for BroadcastHandler {
 
                 Payload::TopologyOk
             }
-            Payload::BroadcastOk => return Ok(()), // we do not care about these messages
-            _ => bail!("Unexpected message received: {:?}", msg),
+            Payload::BroadcastOk | Payload::TopologyOk => return Ok(()), // we ignore these messages
+            Payload::GossipOk { ref have } => {
+                // add to what the neighbour acknowledged to know
+                self.others_know
+                    .get_mut(&msg.src)
+                    .expect("message from unknown node in the cluster")
+                    .extend(have.iter());
+                return Ok(());
+            }
         };
 
         node.reply(msg, reply)
@@ -95,6 +107,12 @@ impl Handler<Payload, Command> for BroadcastHandler {
                             .copied()
                             .collect();
                     }
+
+                    if we_know.is_empty() {
+                        // neighbour already knows about all our messages => do not send
+                        continue;
+                    }
+
                     node.send_to(neighbour, Payload::Gossip { have: we_know })?;
                 }
             }
@@ -105,6 +123,10 @@ impl Handler<Payload, Command> for BroadcastHandler {
 }
 
 fn main() -> anyhow::Result<()> {
+    let mut args = std::env::args();
+    let gossip_interval = args.nth(1).unwrap_or("200".to_string()).parse()?;
+    eprintln!("Using gossip interval {} ms", gossip_interval);
+
     let mut node = Node::new()?;
 
     let broadcast_handler = BroadcastHandler {
@@ -126,7 +148,7 @@ fn main() -> anyhow::Result<()> {
     std::thread::spawn(move || {
         // periodically gossip new messages to the other nodes in the cluster
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(gossip_interval));
             if let Err(e) = tx
                 .send(Command::SendGossip)
                 .context("sending Gossip command")

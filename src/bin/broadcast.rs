@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    thread::JoinHandle,
+};
 
 use anyhow::Context;
 use gossipy::{Handler, Message, Node};
@@ -145,21 +148,20 @@ fn main() -> anyhow::Result<()> {
 
     node.register_command_receiver(rx);
 
-    std::thread::spawn(move || {
+    let jh: JoinHandle<Result<_, anyhow::Error>> = std::thread::spawn(move || {
         // periodically gossip new messages to the other nodes in the cluster
         loop {
             std::thread::sleep(std::time::Duration::from_millis(gossip_interval));
-            if let Err(e) = tx
-                .send(Command::SendGossip)
-                .context("sending Gossip command")
-            {
-                eprintln!("ERROR: {e:?}");
-                break;
-            }
+            tx.send(Command::SendGossip)
+                .context("sending Gossip command")?;
         }
     });
 
     node.run(broadcast_handler)?;
+
+    jh.join()
+        .expect("could not join gossip command thread")
+        .context("gossip command thread errored")?;
 
     Ok(())
 }

@@ -1,6 +1,7 @@
 use std::{
     io::Write,
     sync::{Arc, Mutex},
+    thread::JoinHandle,
 };
 
 use anyhow::{anyhow, bail, Context};
@@ -37,7 +38,7 @@ pub trait Handler<Payload, Command = ()> {
     fn handle(&mut self, msg: Message<Payload>, node: Node<Command>) -> anyhow::Result<()>;
     /// Handles command. Only node that issues commands needs to implement this method.
     fn handle_command(&mut self, _cmd: Command, _node: Node<Command>) -> anyhow::Result<()> {
-        unimplemented!("Node handler using commands must implement this method");
+        unimplemented!("Node handler using commands must implement this method!!!");
     }
 }
 
@@ -139,46 +140,33 @@ where
         let (event_tx, event_rx) = std::sync::mpsc::channel::<Event<Payload, Command>>();
         let event_tx_clone = event_tx.clone();
 
+        let mut cmd_handle: Option<JoinHandle<Result<_, anyhow::Error>>> = None;
         if let Some(command_rx) = self.command_rx.clone() {
             // if the node has command receiver registered,
             // use it to create events of type Command and send it to the event channel
-            std::thread::spawn(move || loop {
+            let jh = std::thread::spawn(move || loop {
                 let cmd = command_rx.lock().expect("lock").recv().unwrap();
-                if let Err(e) = event_tx_clone
+                event_tx_clone
                     .send(Event::Command(cmd))
-                    .context("sending command to the channel")
-                {
-                    {
-                        eprintln!("ERROR: {e:?}");
-                    }
-                }
+                    .context("sending received command to the event channel")?;
             });
+            cmd_handle = Some(jh);
         }
 
         // listen for events from the event channel and handle either message or command
         let node = self.clone();
-        std::thread::spawn(move || loop {
+        let event_handle: JoinHandle<Result<_, anyhow::Error>> = std::thread::spawn(move || loop {
             let event = event_rx.recv().unwrap();
             match event {
                 Event::Message(msg) => {
-                    if let Err(e) = handler
+                    handler
                         .handle(msg, node.clone())
-                        .context("sending message event to the channel")
-                    {
-                        {
-                            eprintln!("ERROR: {e:?}");
-                        }
-                    }
+                        .context("handling message from the event channel")?;
                 }
                 Event::Command(cmd) => {
-                    if let Err(e) = handler
+                    handler
                         .handle_command(cmd, node.clone())
-                        .context("sending command event to the channel")
-                    {
-                        {
-                            eprintln!("ERROR: {e:?}");
-                        }
-                    }
+                        .context("handling command from the event channel")?;
                 }
             }
         });
@@ -188,8 +176,21 @@ where
 
         for msg in incomming_messages {
             let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
-            event_tx.send(Event::Message(msg))?;
+            event_tx
+                .send(Event::Message(msg))
+                .context("sending message from stdin to the event channel")?;
         }
+
+        if let Some(cmd_handle) = cmd_handle {
+            cmd_handle
+                .join()
+                .expect("could not join command thread")
+                .context("command thread errored")?;
+        }
+        event_handle
+            .join()
+            .expect("could not join event thread")
+            .context("event thread errored")?;
 
         Ok(())
     }

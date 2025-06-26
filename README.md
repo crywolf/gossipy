@@ -70,3 +70,26 @@ _Is it stll fault tolerant?_ Yes!
 ```shell
 cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology grid --nemesis partition
 ```
+
+### 4) Stateless Grow-Only Counter
+
+Nodes are using a [sequentially-consistent](https://jepsen.io/consistency/models/sequential) key/value store service provided by Maelstrom.
+
+Other [Consistency Models](https://jepsen.io/consistency/models)
+
+A **Conflict-free Replicated Data Type (CRDT)** is a data structure used in distributed
+computing that allows multiple copies of data to be updated independently and concurrently,
+ensuring that all copies eventually converge to a consistent state.
+This makes CRDTs useful for applications like collaborative editing and distributed databases,
+where changes can happen simultaneously without complex coordination.
+
+Conflict-free Replicated Data Types (CRDTs) are used in systems with optimistic replication, where they take care of conflict resolution. CRDTs ensure that, no matter what data modifications are made on different replicas, the data can always be merged into a consistent state. This merge is performed automatically by the CRDT, without requiring any special conflict resolution code or user intervention.
+
+https://crdt.tech/
+
+https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
+
+
+```shell
+cargo build && maelstrom/maelstrom test -w g-counter --bin ./target/debug/g-counter --node-count 3 --rate 100 --time-limit 20 --log-stderr --nemesis partition
+```

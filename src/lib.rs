@@ -140,23 +140,28 @@ where
         let (event_tx, event_rx) = std::sync::mpsc::channel::<Event<Payload, Command>>();
         let event_tx_clone = event_tx.clone();
 
-        let mut cmd_handle: Option<JoinHandle<Result<_, anyhow::Error>>> = None;
+        let mut cmd_jh: Option<JoinHandle<Result<_, anyhow::Error>>> = None;
         if let Some(command_rx) = self.command_rx.clone() {
             // if the node has command receiver registered,
             // use it to create events of type Command and send it to the event channel
             let jh = std::thread::spawn(move || loop {
-                let cmd = command_rx.lock().expect("lock").recv().unwrap();
+                let cmd = command_rx
+                    .lock()
+                    .expect("lock")
+                    .recv()
+                    .context("receive from command channel")?;
+
                 event_tx_clone
                     .send(Event::Command(cmd))
                     .context("sending received command to the event channel")?;
             });
-            cmd_handle = Some(jh);
+            cmd_jh = Some(jh);
         }
 
         // listen for events from the event channel and handle either message or command
         let node = self.clone();
-        let event_handle: JoinHandle<Result<_, anyhow::Error>> = std::thread::spawn(move || loop {
-            let event = event_rx.recv().unwrap();
+        let event_jh: JoinHandle<Result<_, anyhow::Error>> = std::thread::spawn(move || loop {
+            let event = event_rx.recv().context("receive from event channel")?;
             match event {
                 Event::Message(msg) => {
                     handler
@@ -174,23 +179,33 @@ where
         // send incomming messages to event channel as a Message events
         let incomming_messages = self.messages::<Message<Payload>>();
 
+        let mut error: Option<anyhow::Error> = None;
         for msg in incomming_messages {
             let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
-            event_tx
+            if let Err(e) = event_tx
                 .send(Event::Message(msg))
-                .context("sending message from stdin to the event channel")?;
+                .context("sending message from stdin to the event channel")
+            {
+                error = Some(e);
+                break;
+            };
         }
 
-        if let Some(cmd_handle) = cmd_handle {
-            cmd_handle
+        if let Some(cmd_jh) = cmd_jh {
+            cmd_jh
                 .join()
                 .expect("could not join command thread")
                 .context("command thread errored")?;
         }
-        event_handle
+        event_jh
             .join()
             .expect("could not join event thread")
             .context("event thread errored")?;
+
+        if let Some(err) = error {
+            // log input loop error only after threads finished
+            eprintln!("Error: {err:?}");
+        }
 
         Ok(())
     }
@@ -215,13 +230,15 @@ where
         self.send(reply)
     }
 
-    /// Sends new message with `payload` to `dst`
-    pub fn send_to<P>(&mut self, dst: &str, payload: P) -> anyhow::Result<()>
+    /// Sends new message with `payload` to `dst` and returns message id
+    pub fn send_to<P>(&mut self, dst: &str, payload: P) -> anyhow::Result<usize>
     where
         P: Serialize,
     {
+        let msg_id = self.new_msg_id();
+
         let body = Body {
-            id: Some(self.new_msg_id()),
+            id: Some(msg_id),
             in_reply_to: None,
             payload,
         };
@@ -232,11 +249,13 @@ where
             body,
         };
 
-        self.send(reply)
+        self.send(reply)?;
+
+        Ok(msg_id)
     }
 
     /// Sends provided message
-    pub fn send<P>(&mut self, msg: Message<P>) -> anyhow::Result<()>
+    fn send<P>(&mut self, msg: Message<P>) -> anyhow::Result<()>
     where
         P: Serialize,
     {

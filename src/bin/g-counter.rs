@@ -8,6 +8,10 @@ use anyhow::{bail, Context};
 use gossipy::{Handler, Message, Node};
 use serde::{Deserialize, Serialize};
 
+const KV_SERVICE_ID: &str = "seq-kv";
+const COUNTER_KEY: &str = "g-counter";
+const ERROR_PRECONDITION_FAILED: u16 = 22;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 enum Payload {
@@ -20,34 +24,23 @@ enum Payload {
     CasOk,
 }
 
-const KV_SERVICE_ID: &str = "seq-kv";
-const COUNTER_KEY: &str = "g-counter";
-const ERROR_PRECONDITION_FAILED: u16 = 22;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct WritePayload {
-    #[serde(rename = "type")]
-    typ: &'static str,
-    key: &'static str,
-    value: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ReadPayload {
-    #[serde(rename = "type")]
-    typ: &'static str,
-    key: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// Compare And Swap
-struct CasPayload {
-    #[serde(rename = "type")]
-    typ: &'static str,
-    key: &'static str,
-    from: usize,
-    to: usize,
-    create_if_not_exists: bool,
+#[serde(rename_all = "snake_case", tag = "type")]
+enum KvStorePayload {
+    Write {
+        key: &'static str,
+        value: usize,
+    },
+    Read {
+        key: &'static str,
+    },
+    /// Compare And Swap
+    Cas {
+        key: &'static str,
+        from: usize,
+        to: usize,
+        create_if_not_exists: bool,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -75,10 +68,7 @@ impl Handler<Payload, Command> for GCounter {
         let reply = match msg.body.payload {
             Payload::Add { delta } => {
                 // Read from KV store and later handle ReadOk message returned by KV store
-                let read = ReadPayload {
-                    typ: "read",
-                    key: COUNTER_KEY,
-                };
+                let read = KvStorePayload::Read { key: COUNTER_KEY };
                 let kv_msg_id = node
                     .send_to(KV_SERVICE_ID, read)
                     .context("read from kv store")?;
@@ -92,8 +82,7 @@ impl Handler<Payload, Command> for GCounter {
                 // (https://jepsen.io/consistency/phenomena/stale-read)
                 let now = SystemTime::now();
                 let timestamp = now.duration_since(UNIX_EPOCH).unwrap().as_nanos();
-                let write = WritePayload {
-                    typ: "write",
+                let write = KvStorePayload::Write {
                     key: "timestamp",
                     value: timestamp as usize,
                 };
@@ -101,10 +90,7 @@ impl Handler<Payload, Command> for GCounter {
                     .context("write timestamp to kv store")?;
 
                 // Read the value of the counter
-                let payload = ReadPayload {
-                    typ: "read",
-                    key: COUNTER_KEY,
-                };
+                let payload = KvStorePayload::Read { key: COUNTER_KEY };
                 let kv_msg_id = node
                     .send_to(KV_SERVICE_ID, payload)
                     .context("read from kv store")?;
@@ -133,8 +119,7 @@ impl Handler<Payload, Command> for GCounter {
                     // this is reply to our request to kv_store when client wanted to add delta
                     // and we read current value of the counter
                     if let Some(delta) = self.deltas.remove(&kv_read_msg_id) {
-                        let cas = CasPayload {
-                            typ: "cas",
+                        let cas = KvStorePayload::Cas {
                             key: COUNTER_KEY,
                             from: value,
                             to: value + delta,
@@ -165,10 +150,7 @@ impl Handler<Payload, Command> for GCounter {
 
                     let kv_msg_id = msg.body.in_reply_to.expect("in_reply_to must be set");
                     if let Some(delta) = self.deltas.remove(&kv_msg_id) {
-                        let read = ReadPayload {
-                            typ: "read",
-                            key: COUNTER_KEY,
-                        };
+                        let read = KvStorePayload::Read { key: COUNTER_KEY };
                         let kv_msg_id = node
                             .send_to(KV_SERVICE_ID, read)
                             .context("read from kv store")?;
@@ -190,8 +172,7 @@ impl Handler<Payload, Command> for GCounter {
     fn handle_command(&mut self, cmd: Command, mut node: Node<Command>) -> anyhow::Result<()> {
         match cmd {
             Command::InitStore => {
-                let payload = CasPayload {
-                    typ: "cas",
+                let payload = KvStorePayload::Cas {
                     key: COUNTER_KEY,
                     from: 0,
                     to: 0,

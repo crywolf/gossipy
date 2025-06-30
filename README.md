@@ -93,3 +93,9 @@ https://en.wikipedia.org/wiki/Conflict-free_replicated_data_type
 ```shell
 cargo build && maelstrom/maelstrom test -w g-counter --bin ./target/debug/g-counter --node-count 3 --rate 100 --time-limit 20 --log-stderr --nemesis partition
 ```
+
+### 5a) Single-Node Kafka-Style Log
+
+```shell
+cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka --node-count 1 --concurrency 2n --time-limit 20 --rate 1000 --log-stderr
+```

@@ -31,7 +31,7 @@ enum Payload {
     },
 }
 
-/// Kafka-Style Log
+/// Single-Node Kafka-Style Log
 #[derive(Default)]
 struct KafkaLog {
     //    log_id => ([messages], committed)
@@ -55,7 +55,7 @@ impl Handler<Payload> for KafkaLog {
             Payload::Poll { ref offsets } => {
                 let mut msgs = HashMap::new();
 
-                for (key, offset) in offsets.iter() {
+                for (key, &offset) in offsets.iter() {
                     let log = self.logs.get(key);
                     if log.is_none() {
                         continue;
@@ -64,7 +64,7 @@ impl Handler<Payload> for KafkaLog {
                     let log = log.expect("log exists");
 
                     let mut messages = vec![];
-                    for i in *offset..=(offset + 2) {
+                    for i in offset..=(offset + 2) {
                         if let Some(msg) = log.0.get(i) {
                             messages.push((i, *msg));
                         }

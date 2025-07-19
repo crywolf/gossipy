@@ -5,12 +5,11 @@ use std::{
 };
 
 use anyhow::{bail, Context};
+use gossipy::kv_store::{ERROR_PRECONDITION_FAILED, SEQ_KV_SERVICE_ID};
 use gossipy::{Handler, Message, Node};
 use serde::{Deserialize, Serialize};
 
-const KV_SERVICE_ID: &str = "seq-kv";
 const COUNTER_KEY: &str = "g-counter";
-const ERROR_PRECONDITION_FAILED: u16 = 22;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
@@ -70,7 +69,7 @@ impl Handler<Payload, Command> for GCounter {
                 // Read from KV store and later handle ReadOk message returned by KV store
                 let read = KvStorePayload::Read { key: COUNTER_KEY };
                 let kv_msg_id = node
-                    .send_to(KV_SERVICE_ID, read)
+                    .send_to(SEQ_KV_SERVICE_ID, read)
                     .context("read from kv store")?;
 
                 self.deltas.insert(kv_msg_id, delta);
@@ -86,13 +85,13 @@ impl Handler<Payload, Command> for GCounter {
                     key: "timestamp",
                     value: timestamp as usize,
                 };
-                node.send_to(KV_SERVICE_ID, write)
+                node.send_to(SEQ_KV_SERVICE_ID, write)
                     .context("write timestamp to kv store")?;
 
                 // Read the value of the counter
                 let payload = KvStorePayload::Read { key: COUNTER_KEY };
                 let kv_msg_id = node
-                    .send_to(KV_SERVICE_ID, payload)
+                    .send_to(SEQ_KV_SERVICE_ID, payload)
                     .context("read from kv store")?;
 
                 // Store the original message to be able to respond back
@@ -127,7 +126,7 @@ impl Handler<Payload, Command> for GCounter {
                         };
 
                         let kv_cas_msg_id = node
-                            .send_to(KV_SERVICE_ID, cas)
+                            .send_to(SEQ_KV_SERVICE_ID, cas)
                             .context("add to kv store")?;
 
                         self.deltas.insert(kv_cas_msg_id, delta);
@@ -152,7 +151,7 @@ impl Handler<Payload, Command> for GCounter {
                     if let Some(delta) = self.deltas.remove(&kv_msg_id) {
                         let read = KvStorePayload::Read { key: COUNTER_KEY };
                         let kv_msg_id = node
-                            .send_to(KV_SERVICE_ID, read)
+                            .send_to(SEQ_KV_SERVICE_ID, read)
                             .context("read from kv store")?;
 
                         self.deltas.insert(kv_msg_id, delta);
@@ -180,7 +179,7 @@ impl Handler<Payload, Command> for GCounter {
                 };
                 eprintln!("INFO: Initializing {}", COUNTER_KEY);
 
-                node.send_to(KV_SERVICE_ID, payload)?;
+                node.send_to(SEQ_KV_SERVICE_ID, payload)?;
 
                 Ok(())
             }

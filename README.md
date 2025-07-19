@@ -97,5 +97,11 @@ cargo build && maelstrom/maelstrom test -w g-counter --bin ./target/debug/g-coun
 ### 5a) Single-Node Kafka-Style Log
 
 ```shell
-cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka --node-count 1 --concurrency 2n --time-limit 20 --rate 1000 --log-stderr
+cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka-single-node --node-count 1 --concurrency 2n --time-limit 20 --rate 1000 --log-stderr
+```
+
+### 5b) Multi-Node Kafka-Style Log
+
+```shell
+cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka-multi-node --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --log-stderr
 ```

@@ -176,11 +176,11 @@ where
             }
         });
 
-        // send incomming messages to event channel as a Message events
-        let incomming_messages = self.messages::<Message<Payload>>();
+        // send incoming messages to event channel as a Message events
+        let incoming_messages = self.messages::<Message<Payload>>();
 
         let mut error: Option<anyhow::Error> = None;
-        for msg in incomming_messages {
+        for msg in incoming_messages {
             let msg = msg.context("deserializing Maelstrom message from STDIN failed")?;
             if let Err(e) = event_tx
                 .send(Event::Message(msg))
@@ -293,4 +293,12 @@ where
         node.msg_id += 1;
         msg_id
     }
+}
+
+pub mod kv_store {
+    pub const SEQ_KV_SERVICE_ID: &str = "seq-kv";
+    pub const LIN_KV_SERVICE_ID: &str = "lin-kv";
+
+    pub const ERROR_KEY_DOES_NOT_EXIST: u16 = 20;
+    pub const ERROR_PRECONDITION_FAILED: u16 = 22;
 }

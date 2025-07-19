@@ -7,8 +7,6 @@ use gossipy::kv_store::{
 use gossipy::{Handler, Message, Node};
 use serde::{Deserialize, Serialize};
 
-const NUM_POLLED_MESSAGES: usize = 3;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 enum Payload {
@@ -284,7 +282,7 @@ impl Handler<Payload> for KafkaLog {
 
                 for (key, &offset) in offsets.iter() {
                     let write_msg_id = self
-                        .send_to_lin_kv(KvStorePayload::Write {
+                        .send_to_seq_kv(KvStorePayload::Write {
                             key: self.committed_offset_key(key),
                             value: offset,
                         })
@@ -311,7 +309,7 @@ impl Handler<Payload> for KafkaLog {
                 for key in keys.iter() {
                     let committed_offset_key = self.committed_offset_key(key);
                     let read_msg_id = self
-                        .send_to_lin_kv(KvStorePayload::Read {
+                        .send_to_seq_kv(KvStorePayload::Read {
                             key: committed_offset_key,
                         })
                         .context("read committed offset")?;

@@ -80,6 +80,7 @@ struct PollEntry {
     requested_key_offsets: HashMap<String, usize>,
     key: String,
     offset: usize,
+    max_offset: usize,
 }
 
 /// Container for all polled messages for specific Poll request
@@ -131,12 +132,14 @@ struct KafkaLog {
     /// msg_id => SendEntry
     send_entries: HashMap<usize, SendEntry>,
     /// msg_id => offset key
-    offset_reads: HashMap<usize, String>,
+    send_offset_reads: HashMap<usize, String>,
     /// msg_id => (offset key, offset)
     offset_updates: HashMap<usize, (String, usize)>,
 
     /// msg_id => PollEntry
     poll_entries: HashMap<usize, PollEntry>,
+    /// msg_id => offset
+    poll_offset_reads: HashMap<usize, usize>,
     /// "src-msg_id" => PolledMessages
     polled_messages: HashMap<String, PolledMessages>,
 
@@ -177,7 +180,7 @@ impl Handler<Payload> for KafkaLog {
                     .send_to_lin_kv(read_offset)
                     .with_context(|| format!("read latest offset for the key {}", key))?;
 
-                self.offset_reads.insert(read_msg_id, kv_offset_key);
+                self.send_offset_reads.insert(read_msg_id, kv_offset_key);
 
                 // Store the original message to be able to respond back
                 // when we process the response message from the KV store
@@ -214,7 +217,7 @@ impl Handler<Payload> for KafkaLog {
                     return Ok(());
                 }
 
-                // Poll 1) read entry-key-offset (3x times) or until ERROR_KEY_DOES_NOT_EXIST
+                // Poll 1) read max offset for this key
 
                 // Store the original message to be able to respond back
                 // when we process the response message from the KV store
@@ -237,32 +240,36 @@ impl Handler<Payload> for KafkaLog {
                     },
                 );
 
-                // send Read requests
+                // Send Read requests to get max existing offset for all keys
+                // and process Read responses returned by KV store
                 for (key, offset) in offsets.iter() {
-                    let mut offset = *offset;
-                    if offset == 0 {
-                        offset = 1;
+                    let mut offset_start = *offset;
+                    if offset_start == 0 {
+                        offset_start = 1;
                     }
-                    // TODO instead of NUM_POLLED_MESSAGES const ask for the current (ie. max) offset for the key an use it
-                    for i in offset..(offset + NUM_POLLED_MESSAGES) {
-                        let logged_msg_key = self.logged_msg_key(key, i);
-                        let read_msg_id = self
-                            .send_to_lin_kv(KvStorePayload::Read {
-                                key: logged_msg_key,
-                            })
-                            .context("read message from the log")?;
 
-                        self.poll_entries.insert(
-                            read_msg_id,
-                            PollEntry {
-                                orig_msg_id,
-                                orig_msg_src: orig_msg_src.clone(),
-                                requested_key_offsets: offsets.clone(),
-                                key: key.to_string(),
-                                offset: i,
-                            },
-                        );
-                    }
+                    let kv_offset_key = self.offset_key(key);
+                    let read_offset = KvStorePayload::Read {
+                        key: kv_offset_key.clone(),
+                    };
+
+                    let read_msg_id = self
+                        .send_to_lin_kv(read_offset)
+                        .with_context(|| format!("read latest offset for the key {}", key))?;
+
+                    self.poll_offset_reads.insert(read_msg_id, offset_start);
+
+                    self.poll_entries.insert(
+                        read_msg_id,
+                        PollEntry {
+                            orig_msg_id,
+                            orig_msg_src: orig_msg_src.clone(),
+                            requested_key_offsets: offsets.clone(),
+                            key: key.to_string(),
+                            offset: 0,
+                            max_offset: 0,
+                        },
+                    );
                 }
 
                 Ok(())
@@ -336,7 +343,7 @@ impl Handler<Payload> for KafkaLog {
             Payload::ReadOk { value } => {
                 let msg_id = message.body.in_reply_to.expect("in_reply_to must be set");
 
-                if let Some(kv_offset_key) = self.offset_reads.remove(&msg_id) {
+                if let Some(kv_offset_key) = self.send_offset_reads.remove(&msg_id) {
                     // Send 2) we've read latest offset, increment it and update it
                     let incremented_offset = value + 1;
                     let new_offset = KvStorePayload::Cas {
@@ -361,8 +368,41 @@ impl Handler<Payload> for KafkaLog {
                     return Ok(());
                 }
 
+                if let Some(offset_start) = self.poll_offset_reads.remove(&msg_id) {
+                    let max_offset = value;
+
+                    // Poll 2) We've received response to max offset request, ask fot all logged messages (ie. until max_offset)
+                    if let Some(entry) = self.poll_entries.remove(&msg_id) {
+                        let key = entry.key;
+                        for i in offset_start..=max_offset {
+                            let logged_msg_key = self.logged_msg_key(&key, i);
+                            let read_msg_id = self
+                                .send_to_lin_kv(KvStorePayload::Read {
+                                    key: logged_msg_key,
+                                })
+                                .context("read message from the log")?;
+
+                            self.poll_entries.insert(
+                                read_msg_id,
+                                PollEntry {
+                                    orig_msg_id: entry.orig_msg_id,
+                                    orig_msg_src: entry.orig_msg_src.clone(),
+                                    requested_key_offsets: entry.requested_key_offsets.clone(),
+                                    key: key.clone(),
+                                    offset: i,
+                                    max_offset,
+                                },
+                            );
+                        }
+                    } else {
+                        bail!("MISSING item in poll_entries!!!! (ReadOk - reading offset)");
+                    }
+
+                    return Ok(());
+                }
+
                 if let Some(entry) = self.poll_entries.remove(&msg_id) {
-                    // Poll 2) store returned message (offset and value), return it later when error 'key does not exist' would be encountered
+                    // Poll 3) store returned message (offset and value), return it later when error 'key does not exist' would be encountered
 
                     let orig_msg_id = entry.orig_msg_id;
 
@@ -382,13 +422,7 @@ impl Handler<Payload> for KafkaLog {
                             })
                         });
 
-                    if polled_messages
-                        .messages
-                        .get(&entry.key)
-                        .expect("key must be present")
-                        .len()
-                        >= NUM_POLLED_MESSAGES
-                    {
+                    if entry.offset == entry.max_offset {
                         // we have all requested messages for this key
                         polled_messages.completed_keys.insert(entry.key.clone());
                     }
@@ -412,7 +446,7 @@ impl Handler<Payload> for KafkaLog {
                     }
 
                     eprintln!(
-                            "Poll Read (key {}) all completed, replying with PollOk msg, k:{}. messages len: {}",
+                            "INFO: Poll Read (key {}) all completed, replying with PollOk msg, k:{}. messages len: {}",
                             entry.key, k, polled_messages.messages.len()
                         );
 
@@ -521,12 +555,8 @@ impl Handler<Payload> for KafkaLog {
                         // continue until all offsets were written
                         return Ok(());
                     }
-                    // All committed offsets were written => reply with ok message
-                    eprintln!(
-                        "--> INFO Reply CommitOffsetsOk: {} >= {} | msg-src {}",
-                        commits_written_count, entry.requested_keys_count, k,
-                    );
 
+                    // All committed offsets were written => reply with ok message
                     self.reply(
                         entry.orig_msg_src,
                         entry.orig_msg_id,
@@ -543,7 +573,7 @@ impl Handler<Payload> for KafkaLog {
             Payload::Error { code, ref text } => {
                 let msg_id = message.body.in_reply_to.expect("in_reply_to must be set");
                 if code == ERROR_KEY_DOES_NOT_EXIST {
-                    if let Some(kv_offset_key) = self.offset_reads.remove(&msg_id) {
+                    if let Some(kv_offset_key) = self.send_offset_reads.remove(&msg_id) {
                         // Offset key does not exist, create it with value 0
                         let create_key = KvStorePayload::Cas {
                             key: kv_offset_key.clone(),
@@ -569,16 +599,18 @@ impl Handler<Payload> for KafkaLog {
                     if let Some(entry) = self.poll_entries.remove(&msg_id) {
                         // We asked for message with specific offset, but the key containing requested offset does not exist,
                         // which means that we reached last message for this key
+                        // (or rather there are none and this is response to max offset request which does not exist)
+
+                        eprintln!(
+                            "INFO: Error (key {}) no more messages for this key",
+                            entry.key
+                        );
 
                         let k = format!("{}-{}", entry.orig_msg_src, entry.orig_msg_id);
-                        let polled_messages = self.polled_messages.get_mut(&k);
-                        if polled_messages.is_none() {
-                            // we removed messages because we already got them all and sent them back in reply
-                            // => ignore this Error message
-                            return Ok(());
-                        }
-                        let polled_messages =
-                            polled_messages.expect("entry in polled_messages is set here for sure");
+                        let polled_messages = self
+                            .polled_messages
+                            .get_mut(&k)
+                            .expect("entry in polled_messages should be set here");
 
                         // there are no more messages for this key
                         polled_messages.completed_keys.insert(entry.key.clone());
@@ -602,7 +634,7 @@ impl Handler<Payload> for KafkaLog {
 
                         self.polled_messages.remove(&k); // clean up
                         eprintln!(
-                            "Poll Error (key {}) all completed, replying with PollOk msg",
+                            "INFO: Poll Error (key {}) all completed, replying with PollOk msg",
                             entry.key
                         );
 

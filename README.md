@@ -48,7 +48,7 @@ Challenge is to achieve (in parenthesis are achieved numbers):
 ```shell
 cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast 500 --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology total
 ```
-_Is it stll fault tolerant?_ Yes!
+_Is it still fault tolerant?_ Yes!
 ```shell
 cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast 500 --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology total --nemesis partition
 ```
@@ -66,7 +66,7 @@ Challenge is to achieve (in parenthesis are achieved numbers):
 cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology grid
 ```
 
-_Is it stll fault tolerant?_ Yes!
+_Is it still fault tolerant?_ Yes!
 ```shell
 cargo build && maelstrom/maelstrom test -w broadcast --bin ./target/debug/broadcast --node-count 25 --time-limit 20 --rate 100 --latency 100 --log-stderr --topology grid --nemesis partition
 ```

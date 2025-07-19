@@ -15,6 +15,20 @@ pub struct Message<P> {
     pub body: Body<P>,
 }
 
+impl<P> Message<P> {
+    pub fn new_empty(payload: P) -> Self {
+        Self {
+            src: Default::default(),
+            dst: Default::default(),
+            body: Body {
+                id: None,
+                in_reply_to: None,
+                payload,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Body<P> {
     #[serde(rename = "msg_id")]

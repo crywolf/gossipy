@@ -201,12 +201,15 @@ impl Handler<Payload> for KafkaLog {
             Payload::Poll { ref offsets } => {
                 if offsets.is_empty() {
                     // empty request => immediately return empty response
-                    self.node.as_mut().expect("node was set").reply(
-                        message,
-                        Payload::PollOk {
-                            msgs: HashMap::new(),
-                        },
-                    )?;
+                    self.node
+                        .as_mut()
+                        .expect("node was set in handle fn")
+                        .reply(
+                            message,
+                            Payload::PollOk {
+                                msgs: HashMap::new(),
+                            },
+                        )?;
 
                     return Ok(());
                 }
@@ -415,16 +418,14 @@ impl Handler<Payload> for KafkaLog {
 
                     self.polled_messages.remove(&k); // clean up
 
-                    let mut fake_orig_msg = message;
-                    fake_orig_msg.src = entry.orig_msg_src;
-                    fake_orig_msg.body.id = Some(orig_msg_id);
-
-                    self.node.as_mut().expect("node was set").reply(
-                        fake_orig_msg,
+                    self.reply(
+                        entry.orig_msg_src,
+                        orig_msg_id,
                         Payload::PollOk {
                             msgs: returned_msgs,
                         },
                     )?;
+
                     return Ok(());
                 }
 
@@ -451,14 +452,11 @@ impl Handler<Payload> for KafkaLog {
 
                     self.list_committed_offsets.remove(&k); // clean up
 
-                    let mut fake_orig_msg = message;
-                    fake_orig_msg.src = entry.orig_msg_src;
-                    fake_orig_msg.body.id = Some(entry.orig_msg_id);
-
-                    self.node
-                        .as_mut()
-                        .expect("node was set")
-                        .reply(fake_orig_msg, Payload::ListCommittedOffsetsOk { offsets })?;
+                    self.reply(
+                        entry.orig_msg_src,
+                        entry.orig_msg_id,
+                        Payload::ListCommittedOffsetsOk { offsets },
+                    )?;
 
                     return Ok(());
                 }
@@ -495,16 +493,15 @@ impl Handler<Payload> for KafkaLog {
                 let msg_id = message.body.in_reply_to.expect("in_reply_to must be set");
                 if let Some(entry) = self.send_msg_keys.remove(&msg_id) {
                     // message was logged (written into KV store)
-                    let mut fake_orig_msg = message;
-                    fake_orig_msg.src = entry.orig_msg_src;
-                    fake_orig_msg.body.id = Some(entry.orig_msg_id);
 
-                    self.node.as_mut().expect("node was set").reply(
-                        fake_orig_msg,
+                    self.reply(
+                        entry.orig_msg_src,
+                        entry.orig_msg_id,
                         Payload::SendOk {
                             offset: entry.offset,
                         },
                     )?;
+
                     return Ok(());
                 }
 
@@ -529,14 +526,12 @@ impl Handler<Payload> for KafkaLog {
                         "--> INFO Reply CommitOffsetsOk: {} >= {} | msg-src {}",
                         commits_written_count, entry.requested_keys_count, k,
                     );
-                    let mut fake_orig_msg = message;
-                    fake_orig_msg.src = entry.orig_msg_src;
-                    fake_orig_msg.body.id = Some(entry.orig_msg_id);
 
-                    self.node
-                        .as_mut()
-                        .expect("node was set")
-                        .reply(fake_orig_msg, Payload::CommitOffsetsOk)?;
+                    self.reply(
+                        entry.orig_msg_src,
+                        entry.orig_msg_id,
+                        Payload::CommitOffsetsOk,
+                    )?;
 
                     self.committed_offsets_written.remove(&k); // clean up
                     return Ok(());
@@ -610,12 +605,10 @@ impl Handler<Payload> for KafkaLog {
                             "Poll Error (key {}) all completed, replying with PollOk msg",
                             entry.key
                         );
-                        let mut fake_orig_msg = message;
-                        fake_orig_msg.src = entry.orig_msg_src;
-                        fake_orig_msg.body.id = Some(entry.orig_msg_id);
 
-                        self.node.as_mut().expect("node was set").reply(
-                            fake_orig_msg,
+                        self.reply(
+                            entry.orig_msg_src,
+                            entry.orig_msg_id,
                             Payload::PollOk {
                                 msgs: returned_msgs,
                             },
@@ -625,12 +618,10 @@ impl Handler<Payload> for KafkaLog {
                     }
 
                     if let Some(entry) = self.committed_offset_reads.remove(&msg_id) {
-                        let mut fake_orig_msg = message;
-                        fake_orig_msg.src = entry.orig_msg_src;
-                        fake_orig_msg.body.id = Some(entry.orig_msg_id);
-
-                        self.node.as_mut().expect("node was set").reply(
-                            fake_orig_msg,
+                        // empty committed offsets
+                        self.reply(
+                            entry.orig_msg_src,
+                            entry.orig_msg_id,
                             Payload::ListCommittedOffsetsOk {
                                 offsets: HashMap::new(),
                             },
@@ -695,11 +686,13 @@ impl KafkaLog {
         format!("committed-offset-{key}")
     }
 
+    /// Sends a message to the linearizable key-value store
     fn send_to_lin_kv(&mut self, payload: KvStorePayload) -> anyhow::Result<usize> {
         let msg_id = self.send_to_kv_store(LIN_KV_SERVICE_ID, payload)?;
         Ok(msg_id)
     }
 
+    /// Sends a message to the sequentially consistent key-value store
     fn send_to_seq_kv(&mut self, payload: KvStorePayload) -> anyhow::Result<usize> {
         let msg_id = self.send_to_kv_store(SEQ_KV_SERVICE_ID, payload)?;
         Ok(msg_id)
@@ -712,11 +705,31 @@ impl KafkaLog {
         let msg_id = self
             .node
             .as_mut()
-            .expect("node was set")
+            .expect("node was set in handle fn")
             .send_to(dst, payload)
             .with_context(|| format!("send to kv store: {dst}"))?;
 
         Ok(msg_id)
+    }
+
+    /// Reply to incoming message with result of requested operation
+    fn reply(
+        &mut self,
+        orig_msg_src: String,
+        orig_msg_id: usize,
+        payload: Payload,
+    ) -> anyhow::Result<()> {
+        let fake_payload = Payload::WriteOk;
+        let mut fake_message: Message<Payload> = Message::new_empty(fake_payload);
+        fake_message.src = orig_msg_src;
+        fake_message.body.id = Some(orig_msg_id);
+
+        self.node
+            .as_mut()
+            .expect("node was set in handle fn")
+            .reply(fake_message, payload)?;
+
+        Ok(())
     }
 }
 

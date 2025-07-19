@@ -129,19 +129,19 @@ struct KafkaLog {
     node: Option<Node>,
 
     /// msg_id => SendEntry
-    send_msg_keys: HashMap<usize, SendEntry>,
+    send_entries: HashMap<usize, SendEntry>,
     /// msg_id => offset key
     offset_reads: HashMap<usize, String>,
     /// msg_id => (offset key, offset)
     offset_updates: HashMap<usize, (String, usize)>,
 
     /// msg_id => PollEntry
-    poll_msg_keys: HashMap<usize, PollEntry>,
+    poll_entries: HashMap<usize, PollEntry>,
     /// "src-msg_id" => PolledMessages
     polled_messages: HashMap<String, PolledMessages>,
 
     /// msg_id => CommitOffsetEntry
-    commit_msg_keys: HashMap<usize, CommitOffsetEntry>,
+    commit_entries: HashMap<usize, CommitOffsetEntry>,
     /// msg_id => CommitOffsetEntry
     committed_offset_reads: HashMap<usize, CommitOffsetEntry>,
     /// "src-msg_id" => count
@@ -184,7 +184,7 @@ impl Handler<Payload> for KafkaLog {
                 let orig_msg_src = message.src;
                 let orig_msg_id = message.body.id.expect("message id must be set");
 
-                self.send_msg_keys.insert(
+                self.send_entries.insert(
                     read_msg_id,
                     SendEntry {
                         orig_msg_id,
@@ -252,7 +252,7 @@ impl Handler<Payload> for KafkaLog {
                             })
                             .context("read message from the log")?;
 
-                        self.poll_msg_keys.insert(
+                        self.poll_entries.insert(
                             read_msg_id,
                             PollEntry {
                                 orig_msg_id,
@@ -283,7 +283,7 @@ impl Handler<Payload> for KafkaLog {
                         })
                         .context("commit new offset")?;
 
-                    self.commit_msg_keys.insert(
+                    self.commit_entries.insert(
                         write_msg_id,
                         CommitOffsetEntry {
                             orig_msg_id,
@@ -353,15 +353,15 @@ impl Handler<Payload> for KafkaLog {
                     self.offset_updates
                         .insert(cas_msg_id, (kv_offset_key, incremented_offset));
 
-                    if let Some(entry) = self.send_msg_keys.remove(&msg_id) {
-                        self.send_msg_keys.insert(cas_msg_id, entry);
+                    if let Some(entry) = self.send_entries.remove(&msg_id) {
+                        self.send_entries.insert(cas_msg_id, entry);
                     } else {
                         eprintln!("MISSING item in msg_keys!!!! (ReadOk)");
                     }
                     return Ok(());
                 }
 
-                if let Some(entry) = self.poll_msg_keys.remove(&msg_id) {
+                if let Some(entry) = self.poll_entries.remove(&msg_id) {
                     // Poll 2) store returned message (offset and value), return it later when error 'key does not exist' would be encountered
 
                     let orig_msg_id = entry.orig_msg_id;
@@ -468,7 +468,7 @@ impl Handler<Payload> for KafkaLog {
                 let msg_id = message.body.in_reply_to.expect("in_reply_to must be set");
                 if let Some((_, incremented_offset)) = self.offset_updates.remove(&msg_id) {
                     // offset was incremented
-                    if let Some(mut entry) = self.send_msg_keys.remove(&msg_id) {
+                    if let Some(mut entry) = self.send_entries.remove(&msg_id) {
                         entry.offset = incremented_offset;
 
                         // Send 3) write new message to the log
@@ -479,7 +479,7 @@ impl Handler<Payload> for KafkaLog {
                             })
                             .context("insert new entry to the log")?;
 
-                        self.send_msg_keys.insert(write_msg_id, entry);
+                        self.send_entries.insert(write_msg_id, entry);
                         return Ok(());
                     } else {
                         bail!("MISSING item in msg_keys!!!! (CasOk)");
@@ -491,7 +491,7 @@ impl Handler<Payload> for KafkaLog {
 
             Payload::WriteOk => {
                 let msg_id = message.body.in_reply_to.expect("in_reply_to must be set");
-                if let Some(entry) = self.send_msg_keys.remove(&msg_id) {
+                if let Some(entry) = self.send_entries.remove(&msg_id) {
                     // message was logged (written into KV store)
 
                     self.reply(
@@ -505,7 +505,7 @@ impl Handler<Payload> for KafkaLog {
                     return Ok(());
                 }
 
-                if let Some(entry) = self.commit_msg_keys.remove(&msg_id) {
+                if let Some(entry) = self.commit_entries.remove(&msg_id) {
                     // CommitOffsets
                     // One CommitOffset was written
                     let k = format!("{}-{}", entry.orig_msg_src, entry.orig_msg_id);
@@ -557,8 +557,8 @@ impl Handler<Payload> for KafkaLog {
 
                         self.offset_updates.insert(cas_msg_id, (kv_offset_key, 1));
 
-                        if let Some(entry) = self.send_msg_keys.remove(&msg_id) {
-                            self.send_msg_keys.insert(cas_msg_id, entry);
+                        if let Some(entry) = self.send_entries.remove(&msg_id) {
+                            self.send_entries.insert(cas_msg_id, entry);
                         } else {
                             bail!("MISSING item in msg_keys!!!! (Error msg)");
                         }
@@ -566,7 +566,7 @@ impl Handler<Payload> for KafkaLog {
                         return Ok(());
                     }
 
-                    if let Some(entry) = self.poll_msg_keys.remove(&msg_id) {
+                    if let Some(entry) = self.poll_entries.remove(&msg_id) {
                         // We asked for message with specific offset, but the key containing requested offset does not exist,
                         // which means that we reached last message for this key
 
@@ -649,8 +649,8 @@ impl Handler<Payload> for KafkaLog {
 
                         self.offset_updates
                             .insert(cas_msg_id, (offset_key, incremented_offset));
-                        if let Some(entry) = self.send_msg_keys.remove(&msg_id) {
-                            self.send_msg_keys.insert(cas_msg_id, entry);
+                        if let Some(entry) = self.send_entries.remove(&msg_id) {
+                            self.send_entries.insert(cas_msg_id, entry);
                         } else {
                             bail!("MISSING item in msg_keys!!!! (Error msg)");
                         }

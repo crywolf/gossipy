@@ -100,7 +100,9 @@ cargo build && maelstrom/maelstrom test -w g-counter --bin ./target/debug/g-coun
 cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka-single-node --node-count 1 --concurrency 2n --time-limit 20 --rate 1000 --log-stderr
 ```
 
-### 5b) Multi-Node Kafka-Style Log
+### 5b + 5c) Multi-Node Kafka-Style Log
+
+Nodes are using  [linearizable](https://jepsen.io/consistency/models/linearizable) and [sequentially-consistent](https://jepsen.io/consistency/models/sequential) key/value store services provided by Maelstrom.
 
 ```shell
 cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka-multi-node --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --log-stderr

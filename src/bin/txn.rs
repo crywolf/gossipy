@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::mpsc::Sender};
 
+use anyhow::Context;
 use gossipy::{Handler, Message, Node};
 use serde::{de, ser::SerializeSeq, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -14,29 +15,19 @@ enum Operation {
 enum Payload {
     Txn { txn: Vec<Operation> },
     TxnOk { txn: Vec<Operation> },
+    Replicate { changes: HashMap<String, usize> },
+    ReplicateOk,
 }
 
-#[derive(Default)]
-struct Store(HashMap<usize, usize>);
-
-impl Store {
-    fn read(&self, key: &usize) -> Option<&usize> {
-        self.0.get(key)
-    }
-
-    fn write(&mut self, key: usize, val: usize) -> Option<usize> {
-        self.0.insert(key, val)
-    }
-}
-
-/// Single-Node, Totally-Available Transactions System
+/// Multi-Node, Totally-Available Transactions System
 struct TxnHandler {
-    /// Key-value store
     store: Store,
+    changes: HashMap<String, usize>,
+    command_tx: Sender<Command>,
 }
 
-impl Handler<Payload> for TxnHandler {
-    fn handle(&mut self, mut msg: Message<Payload>, mut node: Node) -> anyhow::Result<()>
+impl Handler<Payload, Command> for TxnHandler {
+    fn handle(&mut self, mut msg: Message<Payload>, mut node: Node<Command>) -> anyhow::Result<()>
     where
         Payload: Serialize,
     {
@@ -51,27 +42,108 @@ impl Handler<Payload> for TxnHandler {
                             *val = v.copied();
                         }
                         Operation::Write { key, val } => {
-                            self.store.write(*key, *val);
+                            let changed = self.store.write(*key, *val);
+                            if changed {
+                                self.changes.insert(key.to_string(), *val);
+                            }
                         }
                     }
 
                     resp.push(*op);
                 }
 
+                if !self.changes.is_empty() {
+                    self.command_tx
+                        .send(Command::Replicate)
+                        .context("send Replicate command")?;
+                }
+
                 Payload::TxnOk { txn: resp }
             }
 
-            Payload::TxnOk { .. } => return Ok(()), // we ignore these messages
+            Payload::TxnOk { .. } => return Ok(()),
+
+            Payload::Replicate { ref changes } => {
+                for (k, v) in changes {
+                    self.store.write(k.parse()?, *v);
+                }
+                Payload::ReplicateOk
+            }
+
+            Payload::ReplicateOk => return Ok(()),
         };
 
         node.reply(msg, reply)
     }
+
+    fn handle_command(&mut self, cmd: Command, mut node: Node<Command>) -> anyhow::Result<()> {
+        match cmd {
+            Command::Replicate => {
+                if self.changes.is_empty() {
+                    return Ok(());
+                }
+                // send changes to other nodes in the cluster
+                for node_id in node.node_ids() {
+                    if node_id == node.id() {
+                        continue;
+                    }
+                    node.send_to(
+                        &node_id,
+                        Payload::Replicate {
+                            changes: self.changes.clone(),
+                        },
+                    )?;
+                }
+                self.changes.clear();
+            }
+        }
+        Ok(())
+    }
 }
 
 impl TxnHandler {
-    fn new() -> Self {
+    fn new(command_tx: Sender<Command>) -> Self {
         Self {
-            store: Store::default(),
+            store: Default::default(),
+            changes: Default::default(),
+            command_tx,
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let mut node = Node::new()?;
+
+    let (tx, rx) = std::sync::mpsc::channel::<Command>();
+
+    node.register_command_receiver(rx);
+
+    let txn_handler = TxnHandler::new(tx);
+
+    node.run(txn_handler)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+enum Command {
+    Replicate,
+}
+
+#[derive(Default)]
+/// Key-value store
+struct Store(HashMap<usize, usize>);
+
+impl Store {
+    fn read(&self, key: &usize) -> Option<&usize> {
+        self.0.get(key)
+    }
+
+    fn write(&mut self, key: usize, val: usize) -> bool {
+        if let Some(old) = self.0.insert(key, val) {
+            old != val // value was changed
+        } else {
+            false // value is still the same, no change
         }
     }
 }
@@ -122,14 +194,4 @@ impl<'de> Deserialize<'de> for Operation {
             ))),
         }
     }
-}
-
-fn main() -> anyhow::Result<()> {
-    let mut node = Node::new()?;
-
-    let txn_handler = TxnHandler::new();
-
-    node.run(txn_handler)?;
-
-    Ok(())
 }

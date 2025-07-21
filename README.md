@@ -113,3 +113,10 @@ cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka-mult
 ```shell
 cargo build && maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn --log-stderr --node-count 1 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total
 ```
+
+### 6b) Multi-Node, Totally-Available, Read Uncommitted Transactions
+
+Transaction writes are replicated across all nodes while ensuring a [Read Uncommitted](https://jepsen.io/consistency/models/read-uncommitted) consistency model and total availability.
+
+```shell
+cargo build && maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn --log-stderr --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total --nemesis partition

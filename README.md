@@ -107,3 +107,9 @@ Nodes are using  [linearizable](https://jepsen.io/consistency/models/linearizabl
 ```shell
 cargo build && maelstrom/maelstrom test -w kafka --bin ./target/debug/kafka-multi-node --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --log-stderr
 ```
+
+### 6a) Single-Node, Totally-Available Transactions
+
+```shell
+cargo build && maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn --log-stderr --node-count 1 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total
+```

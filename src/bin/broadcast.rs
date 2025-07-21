@@ -35,7 +35,7 @@ enum Command {
     SendGossip,
 }
 
-/// Single-Node Broadcast system
+/// Multi-Node Broadcast system
 struct BroadcastHandler {
     messages: HashSet<isize>,
     topology: HashMap<String, Vec<String>>,

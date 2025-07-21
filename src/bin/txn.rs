@@ -16,10 +16,23 @@ enum Payload {
     TxnOk { txn: Vec<Operation> },
 }
 
+#[derive(Default)]
+struct Store(HashMap<usize, usize>);
+
+impl Store {
+    fn read(&self, key: &usize) -> Option<&usize> {
+        self.0.get(key)
+    }
+
+    fn write(&mut self, key: usize, val: usize) -> Option<usize> {
+        self.0.insert(key, val)
+    }
+}
+
 /// Single-Node, Totally-Available Transactions System
 struct TxnHandler {
     /// Key-value store
-    store: HashMap<usize, usize>,
+    store: Store,
 }
 
 impl Handler<Payload> for TxnHandler {
@@ -34,11 +47,11 @@ impl Handler<Payload> for TxnHandler {
                 for op in txn.iter_mut() {
                     match op {
                         Operation::Read { key, ref mut val } => {
-                            let v = self.store.get(key);
+                            let v = self.store.read(key);
                             *val = v.copied();
                         }
                         Operation::Write { key, val } => {
-                            self.store.insert(*key, *val);
+                            self.store.write(*key, *val);
                         }
                     }
 
@@ -52,6 +65,14 @@ impl Handler<Payload> for TxnHandler {
         };
 
         node.reply(msg, reply)
+    }
+}
+
+impl TxnHandler {
+    fn new() -> Self {
+        Self {
+            store: Store::default(),
+        }
     }
 }
 
@@ -106,9 +127,7 @@ impl<'de> Deserialize<'de> for Operation {
 fn main() -> anyhow::Result<()> {
     let mut node = Node::new()?;
 
-    let txn_handler = TxnHandler {
-        store: HashMap::new(),
-    };
+    let txn_handler = TxnHandler::new();
 
     node.run(txn_handler)?;
 

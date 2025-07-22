@@ -120,3 +120,16 @@ Transaction writes are replicated across all nodes while ensuring a [Read Uncomm
 
 ```shell
 cargo build && maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn --log-stderr --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-uncommitted --availability total --nemesis partition
+```
+
+### 6c) Multi-Node, Totally-Available, Read Committed Transactions
+
+Consistency model is strengthened to [Read Committed](https://jepsen.io/consistency/models/read-committed) while also preserving total availability.
+
+```shell
+cargo build && maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn --log-stderr --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total –-nemesis partition
+```
+
+```shell
+cargo build && maelstrom/maelstrom test -w txn-rw-register --bin ./target/debug/txn --log-stderr --node-count 2 --concurrency 10n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total --nemesis partition --max-txn-length 20 --max-writes-per-key 10000000 --key-count 2
+```

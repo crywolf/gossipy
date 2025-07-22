@@ -80,8 +80,6 @@ pub struct Inner {
     pub node_ids: Vec<String>,
     /// Message ID counter
     msg_id: usize,
-    stdin: std::io::Stdin,
-    stdout: std::io::Stdout,
 }
 
 impl<Command> Node<Command>
@@ -95,15 +93,11 @@ where
                 id: String::new(),
                 node_ids: Vec::new(),
                 msg_id: 1,
-                stdin: std::io::stdin(),
-                stdout: std::io::stdout(),
             })),
             command_rx: None,
         };
 
-        let stdin = node.inner.lock().expect("lock").stdin.lock();
-
-        let msg: Message<InitPayload> = serde_json::Deserializer::from_reader(stdin)
+        let msg: Message<InitPayload> = serde_json::Deserializer::from_reader(std::io::stdin())
             .into_iter()
             .next()
             .ok_or(anyhow!("failed to read Init message from STDIN"))?
@@ -126,7 +120,7 @@ where
         };
 
         let reply = Message {
-            src: node.inner.lock().expect("lock").id.clone(),
+            src: node.id(),
             dst: msg.src,
             body,
         };
@@ -236,7 +230,7 @@ where
         };
 
         let reply = Message {
-            src: self.inner.lock().expect("lock").id.clone(),
+            src: self.id(),
             dst: incoming_msg.src,
             body,
         };
@@ -258,7 +252,7 @@ where
         };
 
         let reply = Message {
-            src: self.inner.lock().expect("lock").id.clone(),
+            src: self.id(),
             dst: dst.to_owned(),
             body,
         };
@@ -273,7 +267,7 @@ where
     where
         P: Serialize,
     {
-        let mut stdout = self.inner.lock().expect("lock").stdout.lock();
+        let mut stdout = std::io::stdout();
 
         serde_json::to_writer(&mut stdout, &msg).context("writing message to STDOUT")?;
         stdout.write_all(b"\n").context("write new line")?;
@@ -296,8 +290,7 @@ where
     where
         T: for<'a> Deserialize<'a>,
     {
-        serde_json::Deserializer::from_reader(self.inner.lock().expect("lock").stdin.lock())
-            .into_iter::<T>()
+        serde_json::Deserializer::from_reader(std::io::stdin()).into_iter::<T>()
     }
 
     /// Produces new message ID
